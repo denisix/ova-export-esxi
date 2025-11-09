@@ -117,15 +117,28 @@ func parseManifestFile(ovaPath string, manifestFile *OVAFile) ([]ManifestEntry, 
 	}
 	defer file.Close()
 
-	_, err = file.Seek(manifestFile.Offset, io.SeekStart)
-	if err != nil {
-		return nil, err
-	}
+	// Use TAR reader to properly extract the manifest content
+	tarReader := tar.NewReader(file)
 
-	content := make([]byte, manifestFile.Size)
-	_, err = io.ReadFull(file, content)
-	if err != nil {
-		return nil, err
+	var content []byte
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			return nil, fmt.Errorf("manifest file not found in TAR archive")
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to read TAR archive: %w", err)
+		}
+
+		// Check if this is the manifest file we're looking for
+		if header.Name == manifestFile.Name {
+			// Read the manifest content directly from the TAR reader
+			content, err = io.ReadAll(tarReader)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read manifest content: %w", err)
+			}
+			break
+		}
 	}
 
 	var entries []ManifestEntry
@@ -239,18 +252,27 @@ func (pkg *OVAPackage) ExtractOVFContent() (string, error) {
 	}
 	defer file.Close()
 
-	// Seek to the OVF file's offset in the OVA
-	_, err = file.Seek(pkg.OVFFile.Offset, io.SeekStart)
-	if err != nil {
-		return "", fmt.Errorf("failed to seek to OVF offset: %w", err)
-	}
+	// Use TAR reader to properly extract the OVF content
+	// This avoids offset calculation issues with TAR headers and padding
+	tarReader := tar.NewReader(file)
 
-	// Read the OVF content
-	content := make([]byte, pkg.OVFFile.Size)
-	_, err = io.ReadFull(file, content)
-	if err != nil {
-		return "", fmt.Errorf("failed to read OVF content: %w", err)
-	}
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			return "", fmt.Errorf("OVF file not found in TAR archive")
+		}
+		if err != nil {
+			return "", fmt.Errorf("failed to read TAR archive: %w", err)
+		}
 
-	return string(content), nil
+		// Check if this is the OVF file we're looking for
+		if header.Name == pkg.OVFFile.Name {
+			// Read the OVF content directly from the TAR reader
+			content, err := io.ReadAll(tarReader)
+			if err != nil {
+				return "", fmt.Errorf("failed to read OVF content: %w", err)
+			}
+			return string(content), nil
+		}
+	}
 }
