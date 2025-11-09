@@ -226,3 +226,31 @@ func (pkg *OVAPackage) ListFiles() []string {
 	}
 	return files
 }
+
+// ExtractOVFContent extracts and returns the OVF descriptor XML content from the OVA file
+func (pkg *OVAPackage) ExtractOVFContent() (string, error) {
+	if pkg.OVFFile == nil {
+		return "", fmt.Errorf("no OVF file found in package")
+	}
+
+	file, err := os.Open(pkg.FilePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open OVA file: %w", err)
+	}
+	defer file.Close()
+
+	// Seek to the OVF file's offset in the OVA
+	_, err = file.Seek(pkg.OVFFile.Offset, io.SeekStart)
+	if err != nil {
+		return "", fmt.Errorf("failed to seek to OVF offset: %w", err)
+	}
+
+	// Read the OVF content
+	content := make([]byte, pkg.OVFFile.Size)
+	_, err = io.ReadFull(file, content)
+	if err != nil {
+		return "", fmt.Errorf("failed to read OVF content: %w", err)
+	}
+
+	return string(content), nil
+}

@@ -420,7 +420,7 @@ func runUpload(cmd *cobra.Command, args []string) error {
 
 	session := tracker.GetSession()
 	if !quiet {
-		fmt.Printf("Upload completed successfully in %s\n", time.Since(session.StartTime).Round(time.Second))
+		fmt.Printf("VMDK upload completed successfully in %s\n", time.Since(session.StartTime).Round(time.Second))
 		if session.RetryAttempts > 0 {
 			fmt.Printf("Total retry attempts: %d\n", session.RetryAttempts)
 		}
@@ -430,7 +430,35 @@ func runUpload(cmd *cobra.Command, args []string) error {
 		"duration":       time.Since(session.StartTime),
 		"total_size":     formatBytes(session.TotalSize),
 		"retry_attempts": session.RetryAttempts,
-	}).Info("Upload completed successfully")
+	}).Info("VMDK upload completed successfully")
+
+	// Now create the VM from the OVF descriptor
+	if !quiet {
+		fmt.Printf("\nCreating VM from OVF descriptor...\n")
+	}
+	logger.Info("Extracting OVF descriptor and creating VM")
+
+	// Extract OVF content
+	ovfContent, err := ovaPackage.ExtractOVFContent()
+	if err != nil {
+		return fmt.Errorf("failed to extract OVF content: %w", err)
+	}
+
+	if verbose {
+		fmt.Printf("OVF descriptor extracted (%d bytes)\n", len(ovfContent))
+	}
+
+	// Import VM from OVF
+	err = client.ImportVMFromOVF(ovfContent, vmName, datastore, network)
+	if err != nil {
+		return fmt.Errorf("failed to create VM from OVF: %w", err)
+	}
+
+	if !quiet {
+		fmt.Printf("VM '%s' created successfully!\n", vmName)
+	}
+
+	logger.WithField("vm_name", vmName).Info("VM created successfully from OVF")
 
 	// Clean up session file
 	tracker.Delete()
