@@ -102,7 +102,7 @@ func (c *Client) ImportVMFromOVF(ovfContent string, vmName string, datastoreName
 	// since we've already uploaded the VMDKs to {vmName}/ directory
 	if importSpec.ImportSpec != nil {
 		if configSpec, ok := importSpec.ImportSpec.(*types.VirtualMachineImportSpec); ok {
-			// Update disk file paths to point to uploaded VMDKs
+			// Update disk file paths to point to uploaded VMDKs and ensure we use existing files
 			if configSpec.ConfigSpec.DeviceChange != nil {
 				for i, change := range configSpec.ConfigSpec.DeviceChange {
 					if diskChange, ok := change.(*types.VirtualDeviceConfigSpec); ok {
@@ -137,6 +137,12 @@ func (c *Client) ImportVMFromOVF(ovfContent string, vmName string, datastoreName
 										// Set the path to where we uploaded the VMDK
 										newPath := fmt.Sprintf("[%s] %s/%s", datastoreName, vmName, diskFileName)
 										backing.FileName = newPath
+
+										// CRITICAL: Clear FileOperation to use existing file instead of creating new one
+										// When FileOperation is set to "create", ESXi tries to create a new disk
+										// We want to use the existing uploaded VMDK, so we clear this field
+										diskChange.FileOperation = ""
+
 										configSpec.ConfigSpec.DeviceChange[i] = diskChange
 									}
 								}
@@ -159,9 +165,45 @@ func (c *Client) ImportVMFromOVF(ovfContent string, vmName string, datastoreName
 				return fmt.Errorf("VM creation task failed: %w", err)
 			}
 
-			// Log the VM info
+			// Get the created VM reference
+			var vmRef types.ManagedObjectReference
 			if info != nil && info.Result != nil {
-				fmt.Printf("VM created successfully with reference: %v\n", info.Result)
+				vmRef = info.Result.(types.ManagedObjectReference)
+				fmt.Printf("VM created successfully with reference: %v\n", vmRef)
+			} else {
+				return fmt.Errorf("failed to get VM reference from creation result")
+			}
+
+			// Get the VM object to configure boot order
+			vm := object.NewVirtualMachine(c.GetVimClient(), vmRef)
+
+			// Configure boot order to prioritize disk boot
+			// This ensures the VM tries to boot from the disk first before network
+			bootOptions := &types.VirtualMachineBootOptions{
+				BootOrder: []types.BaseVirtualMachineBootOptionsBootableDevice{
+					// Boot from disk first
+					&types.VirtualMachineBootOptionsBootableDiskDevice{},
+					// Then try network boot if disk fails
+					&types.VirtualMachineBootOptionsBootableEthernetDevice{},
+				},
+			}
+
+			// Reconfigure VM to set boot order
+			reconfigSpec := types.VirtualMachineConfigSpec{
+				BootOptions: bootOptions,
+			}
+
+			reconfigTask, err := vm.Reconfigure(ctx, reconfigSpec)
+			if err != nil {
+				fmt.Printf("Warning: Failed to set boot order: %v\n", err)
+				// Don't fail the entire operation, boot order is a nice-to-have
+			} else {
+				err = reconfigTask.Wait(ctx)
+				if err != nil {
+					fmt.Printf("Warning: Boot order configuration failed: %v\n", err)
+				} else {
+					fmt.Printf("Boot order configured: Disk -> Network\n")
+				}
 			}
 
 			return nil
