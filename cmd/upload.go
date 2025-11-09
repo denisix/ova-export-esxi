@@ -255,6 +255,35 @@ func runUpload(cmd *cobra.Command, args []string) error {
 
 	logger.WithField("datastore", datastore).Info("Datastore found")
 
+	// ===== CREATE VM FIRST (BEFORE DISK UPLOADS) - matching ovftool behavior =====
+	if !quiet {
+		fmt.Printf("\nCreating VM from OVF descriptor (before disk uploads)...\n")
+	}
+	logger.Info("Extracting OVF descriptor and creating VM skeleton")
+
+	// Extract OVF content
+	ovfContent, err := ovaPackage.ExtractOVFContent()
+	if err != nil {
+		return fmt.Errorf("failed to extract OVF content: %w", err)
+	}
+
+	if verbose {
+		fmt.Printf("OVF descriptor extracted (%d bytes)\n", len(ovfContent))
+		fmt.Printf("Creating VM skeleton - this matches ovftool behavior\n")
+	}
+
+	// Import VM from OVF (creates VM with disk backing files)
+	err = client.ImportVMFromOVF(ovfContent, vmName, datastore, network)
+	if err != nil {
+		return fmt.Errorf("failed to create VM from OVF: %w", err)
+	}
+
+	if !quiet {
+		fmt.Printf("VM '%s' created successfully! Now uploading disk data...\n", vmName)
+	}
+
+	logger.WithField("vm_name", vmName).Info("VM skeleton created, proceeding with disk uploads")
+
 	// Create uploader with retry mechanism
 	uploader := esxi.NewUploader(client)
 	uploader.SetChunkSize(chunkSize)
@@ -424,41 +453,15 @@ func runUpload(cmd *cobra.Command, args []string) error {
 		if session.RetryAttempts > 0 {
 			fmt.Printf("Total retry attempts: %d\n", session.RetryAttempts)
 		}
+		fmt.Printf("\nVM '%s' is ready to use!\n", vmName)
 	}
 
 	logger.WithFields(logrus.Fields{
 		"duration":       time.Since(session.StartTime),
 		"total_size":     formatBytes(session.TotalSize),
 		"retry_attempts": session.RetryAttempts,
-	}).Info("VMDK upload completed successfully")
-
-	// Now create the VM from the OVF descriptor
-	if !quiet {
-		fmt.Printf("\nCreating VM from OVF descriptor...\n")
-	}
-	logger.Info("Extracting OVF descriptor and creating VM")
-
-	// Extract OVF content
-	ovfContent, err := ovaPackage.ExtractOVFContent()
-	if err != nil {
-		return fmt.Errorf("failed to extract OVF content: %w", err)
-	}
-
-	if verbose {
-		fmt.Printf("OVF descriptor extracted (%d bytes)\n", len(ovfContent))
-	}
-
-	// Import VM from OVF
-	err = client.ImportVMFromOVF(ovfContent, vmName, datastore, network)
-	if err != nil {
-		return fmt.Errorf("failed to create VM from OVF: %w", err)
-	}
-
-	if !quiet {
-		fmt.Printf("VM '%s' created successfully!\n", vmName)
-	}
-
-	logger.WithField("vm_name", vmName).Info("VM created successfully from OVF")
+		"vm_name":        vmName,
+	}).Info("VM disk upload completed successfully - VM is ready")
 
 	// Clean up session file
 	tracker.Delete()
